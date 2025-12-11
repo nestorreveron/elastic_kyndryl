@@ -144,6 +144,8 @@ curl -X PUT "localhost:9200/_ingest/pipeline/grok-error" \
 }'
 ```
 
+![Grok debugger sample](Elastic_Dic_2025_3_2_Grok_debugger.jpg "Grok_debugger")
+
 ---
 
 # ========================================
