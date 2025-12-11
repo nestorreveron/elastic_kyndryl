@@ -1,0 +1,1013 @@
+
+Comandos útiles para trabajar con índices en Elasticsearch desde curl. Los he agrupado por tareas comunes para que los tengas a mano. Todos los ejemplos usan tu nodo localhost:9200.
+	
+⚠️ Nota: Cambia los nombres de índice/alias según tu entorno. En producción, cuidado con operaciones que bloquean (p. ej., delete, close, forcemerge).
+
+
+
+🧪 Integridad y salud
+
+	** Salud del clúster:
+		curl -s 'http://localhost:9200/_cluster/health?pretty'
+		
+	** Estado del índice (routing, recovery):
+		curl -s 'http://localhost:9200/logstash-ha-2025.12.10/_stats/store,docs,segments?pretty'
+		
+	** Comprobar asignación de shards:
+		curl -s 'http://localhost:9200/_cat/allocation?v'
+	
+	** Estado detallado de los nodos del clúster
+		curl -s 'http://localhost:9200/_cat/nodes?v'
+	
+	** Roles del clúster (ver roles por nodo)**
+		curl -s 'http://localhost:9200/_cat/nodes?h=name,ip,node.role,master'
+	
+	** Información completa de nodos (JSON detallado)**
+		curl -s 'http://localhost:9200/_nodes?pretty'
+
+	** Versión
+		curl -s http://localhost:9200/ | grep -E '"name"|"cluster_name"|"number"'
+
+
+
+👉 Monitorizar shards y su asignación (routing allocation)**.
+
+	** Ver el estado del cluster (shards incluidos)
+		curl -s http://localhost:9200/_cluster/health?pretty
+
+	** Ver la asignación de shards por nodo
+		curl -s http://localhost:9200/_cat/shards?v
+
+	** Ver el **routing allocation** (decisiones del cluster)
+		curl -s http://localhost:9200/_cluster/allocation/explain?pretty     --- la API /_cluster/allocation/explain necesita que le especifiques qué shard quieres analizar. Cuando hay shards sin asignar, puedes llamar a la API sin cuerpo;
+
+	** Ver nodos y shards asignados
+		curl -s http://localhost:9200/_cat/allocation?v
+
+	** Ver shards sin asignar (unassigned)
+		curl -s http://localhost:9200/_cat/shards?h=index,shard,state | grep UNASSIGNED
+
+	** Ver configuración de routing allocation
+		curl -s http://localhost:9200/_cluster/settings?pretty
+
+
+
+📋 Listado y exploración
+
+	** Listar todos los índices (tabla):
+		curl -s 'http://localhost:9200/_cat/indices?v'
+		
+	** Solo nombres de índice:
+		curl -s 'http://localhost:9200/_cat/indices?h=index'
+		
+	** Ordenados por tamaño:
+		curl -s 'http://localhost:9200/_cat/indices?v&s=store.size:desc'
+		
+	** Filtrar por patrón (solo índices de usuario, sin punto inicial):
+		curl -s 'http://localhost:9200/_cat/indices?h=index' | grep -vE '^.'
+		
+	** Detalles de shards por índice:
+		curl -s 'http://localhost:9200/_cat/shards/logstash-ha-2025.12.10?v'
+		
+	** Ver segmentos (útil para diagnosticar rendimiento):
+		curl -s 'http://localhost:9200/_cat/segments/logstash-ha-2025.12.10?v'
+		
+	** Estadísticas del índice (docs, store, query cache, etc.):
+		curl -s 'http://localhost:9200/logstash-ha-2025.12.10/_stats?pretty'
+
+
+
+🔎 Búsqueda y recuperación de documentos
+
+	** Buscar texto (full-text):
+		curl -s 'http://localhost:9200/logstash-ha-2025.12.10/_search?q=ERROR&size=10&pretty'
+		
+	** Buscar por campo exacto (message):
+		curl -s 'http://localhost:9200/logstash-ha-2025.12.10/_search?q=message:"ERROR probando logstash"&size=1&pretty'
+		
+	** Último documento por @timestamp:
+		curl -s 'http://localhost:9200/logstash-ha-2025.12.10/_search?sort=@timestamp:desc&size=1&pretty'
+		
+	** Obtener por _id:
+		curl -s 'http://localhost:9200/logstash-ha-2025.12.10/_doc/<ID>?pretty'
+
+
+
+🔍 Búsquedas avanzadas en Elasticsearch
+Estas consultas permiten realizar búsquedas más potentes y flexibles en tus índices.
+
+### ✅ **1. Fuzzy Search (búsqueda difusa)**
+
+	** Busca términos similares tolerando errores tipográficos.
+
+		curl -s -H 'Content-Type: application/json' -X POST "http://localhost:9200/logstash-ha-2025.12.10/_search" -d '{
+		  "query": {
+		    "fuzzy": {
+		      "message": {
+		        "value": "errror",
+		        "fuzziness": 1,
+		        "prefix_length": 1,
+		        "max_expansions": 50
+		      }
+		    }
+		  }
+		}'
+
+
+### ✅ **2. Match con fuzziness automática**
+
+	** Permite errores tipográficos con ajuste dinámico.
+
+		curl -s -H 'Content-Type: application/json' -X POST "http://localhost:9200/logstash-ha-2025.12.10/_search" -d '{
+		  "query": {
+		    "match": {
+		      "message": {
+		        "query": "Herrror",
+		        "fuzziness": "AUTO"
+		      }
+		    }
+		  }
+		}'
+
+
+*   `"AUTO"` ajusta la tolerancia según la longitud del término.
+*   **`fuzziness`**: número máximo de ediciones permitidas (0, 1, 2).
+*   **`prefix_length`**: caracteres iniciales que deben coincidir.
+*   **`max_expansions`**: variaciones generadas.
+
+
+
+### ✅ **3. Wildcard Query**
+
+	** Busca patrones con comodines (`*` para varios caracteres, `?` para uno).
+
+		curl -s -H 'Content-Type: application/json' -X POST "http://localhost:9200/logstash-ha-2025.12.10/_search" -d '{
+		  "query": {
+		    "wildcard": {
+		      "message": {
+		        "value": "err*"
+		      }
+		    }
+		  }
+		}'
+
+
+Ejemplo: `err*` coincide con `error`, `erroneo`, etc.
+
+
+
+### ✅ **4. Regexp Query**
+
+	** Busca usando expresiones regulares.
+
+	curl -s -H 'Content-Type: application/json' -X POST "http://localhost:9200/logstash-ha-2025.12.10/_search" -d '{
+	  "query": {
+	    "regexp": {
+	      "message": "err.*"
+	    }
+	  }
+	}'
+
+Ejemplo: `err.*` coincide con cualquier palabra que empiece por `err`.
+
+
+### ✅ **5. Phrase Query (frase exacta)**
+
+	** Busca documentos que contengan la frase exacta `"error crítico"`.
+
+		curl -s -H 'Content-Type: application/json' -X POST "http://localhost:9200/logstash-ha-2025.12.10/_search" -d '{
+		  "query": {
+		    "match_phrase": {
+		      "message": "error critico"
+		    }
+		  }
+		}'
+
+
+### ✅ **6. Slop Query (frase flexible)**
+
+	** Permite palabras intermedias entre los términos de la frase.
+
+		curl -s -H 'Content-Type: application/json' -X POST "http://localhost:9200/logstash-ha-2025.12.10/_search" -d '{
+		  "query": {
+		    "match_phrase": {
+		      "message": {
+		        "query": "error crítico",
+		        "slop": 3
+		      }
+		    }
+		  }
+		}'
+
+*   `slop: 3` → permite hasta 3 palabras entre `error` y `crítico`.
+
+
+
+✨ **arrays** y **nested** en Elasticsearch: mapeos, indexación, búsquedas, agregaciones y casos típicos/pitfalls. Lo puedes copiar tal cual.
+
+⚠️ Nota rápida: en Elasticsearch, **un array** es cualquier campo que recibe múltiples valores (nativos en JSON), y **`nested`** es un **tipo de mapeo** para arrays de objetos donde quieres preservar la relación interna entre los atributos del mismo objeto. Si no usas `nested`, los objetos del array se **aplanan** y puedes obtener coincidencias cruzadas incorrectas (cross-object matching).
+
+
+## Crear índice: arrays simples
+	Los arrays no necesitan un tipo especial: basta con definir el campo y enviar múltiples valores.
+	
+		curl -s -X PUT "http://localhost:9200/products" -H "Content-Type: application/json" -d '
+		{
+		  "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		  "mappings": {
+		    "properties": {
+		      "name":   { "type": "text" },
+		      "tags":   { "type": "keyword" },         // array de keywords
+		      "prices": { "type": "float" },           // array de números
+		      "colors": { "type": "keyword" },         // array de strings
+		      "created_at": { "type": "date" }
+		    }
+		  }
+		}'
+
+
+
+## Indexar documentos con arrays
+	
+		curl -s -X POST "http://localhost:9200/products/_doc/1" -H "Content-Type: application/json" -d '
+		{
+		  "name": "Zapatillas Trail",
+		  "tags": ["deporte", "outdoor", "rebajas"],
+		  "prices": [89.99, 79.99],
+		  "colors": ["azul", "negro"],
+		  "created_at": "2025-12-01T10:00:00Z"
+		}'
+
+
+		curl -s -X POST "http://localhost:9200/products/_doc/2" -H "Content-Type: application/json" -d '
+		{
+		  "name": "Camiseta Técnica",
+		  "tags": ["deporte", "running"],
+		  "prices": [29.99],
+		  "colors": ["blanco"],
+		  "created_at": "2025-12-02T09:30:00Z"
+		}'
+
+
+
+## Consultas sobre arrays
+
+	** Filtrar documentos que contengan un valor en el array (tags contiene 'outdoor')
+		curl -s -X GET "http://localhost:9200/products/_search" -H "Content-Type: application/json" -d '
+		{
+		  "query": { "term": { "tags": "outdoor" } }
+		}'
+	
+	** Buscar cualquier color dentro del conjunto dado
+		curl -s -X GET "http://localhost:9200/products/_search" -H "Content-Type: application/json" -d '
+		{
+		  "query": { "terms": { "colors": ["negro", "rojo"] } }
+		}'
+	
+	** Rango sobre arrays (si prices tiene algún valor <= 80)
+		curl -s -X GET "http://localhost:9200/products/_search" -H "Content-Type: application/json" -d '
+		{
+		  "query": { "range": { "prices": { "lte": 80 } } }
+		}'
+
+
+> ✅ Arrays funcionan bien cuando los elementos son **valores simples** (strings/números).  
+> ❌ Si usas **arrays de objetos**, considera `nested`.
+
+
+
+## Crear índice con campos `nested`
+
+		curl -s -X PUT "http://localhost:9200/orders" -H "Content-Type: application/json" -d '
+		{
+		  "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		  "mappings": {
+		    "properties": {
+		      "customer_id": { "type": "keyword" },
+		      "status":      { "type": "keyword" },
+		      "items": {
+		        "type": "nested",                      // << CLAVE: nested para array de objetos
+		        "properties": {
+		          "sku":      { "type": "keyword" },
+		          "qty":      { "type": "integer" },
+		          "price":    { "type": "float" },
+		          "tags":     { "type": "keyword" },   // nested admite arrays internos
+		          "shipping": {
+		            "type": "nested",                  // nested dentro de nested (válido)
+		            "properties": {
+		              "method": { "type": "keyword" },
+		              "cost":   { "type": "float" }
+		            }
+		          }
+		        }
+		      },
+		      "created_at": { "type": "date" }
+		    }
+		  }
+		}'
+
+
+## Indexar documentos con `nested`
+
+	curl -s -X POST "http://localhost:9200/orders/_doc/1001" -H "Content-Type: application/json" -d '
+	{
+	  "customer_id": "CUST-001",
+	  "status": "paid",
+	  "items": [
+	    {
+	      "sku": "SKU-TRAIL-001",
+	      "qty": 2,
+	      "price": 79.99,
+	      "tags": ["outdoor", "deporte"],
+	      "shipping": [{ "method": "standard", "cost": 4.99 }]
+	    },
+	    {
+	      "sku": "SKU-TEE-101",
+	      "qty": 1,
+	      "price": 29.99,
+	      "tags": ["running"],
+	      "shipping": [{ "method": "express", "cost": 7.99 }]
+	    }
+	  ],
+	  "created_at": "2025-12-03T08:15:00Z"
+	}'
+
+
+## Consultas `nested` (con `inner_hits`)
+
+	** Caso típico**: encontrar pedidos donde **el mismo elemento** (`items`) cumpla **sku = X** y **price < Y**. Sin `nested`, podrías mezclar `sku` de un objeto con `price` 
+	** de otro (resultado erróneo). Con `nested` se preserva el “bloque” objeto.
+
+		curl -s -X GET "http://localhost:9200/orders/_search" -H "Content-Type: application/json" -d '
+		{
+		  "query": {
+		    "nested": {
+		      "path": "items",
+		      "query": {
+		        "bool": {
+		          "must": [
+		            { "term": { "items.sku": "SKU-TRAIL-001" } },
+		            { "range": { "items.price": { "lt": 80 } } }
+		          ]
+		        }
+		      },
+		      "inner_hits": { "size": 10, "sort": [{ "items.price": "asc" }] }
+		    }
+		  }
+		}'
+
+
+	** Filtrar por atributo en nested anidado (`items.shipping.method`)**:
+
+		curl -s -X GET "http://localhost:9200/orders/_search" -H "Content-Type: application/json" -d '
+		{
+		  "query": {
+		    "nested": {
+		      "path": "items",
+		      "query": {
+		        "nested": {
+		          "path": "items.shipping",
+		          "query": { "term": { "items.shipping.method": "express" } },
+		          "inner_hits": { "name": "shipping_hits" }
+		        }
+		      },
+		      "inner_hits": { "name": "item_hits" }
+		    }
+		  }
+		}'
+
+
+	** Búsqueda por arrays dentro de nested (tags)**:
+	
+		curl -s -X GET "http://localhost:9200/orders/_search" -H "Content-Type: application/json" -d '
+		{
+		  "query": {
+		    "nested": {
+		      "path": "items",
+		      "query": {
+		        "terms": { "items.tags": ["deporte", "outdoor"] }
+		      },
+		      "inner_hits": { "size": 5 }
+		    }
+		  }
+		}'
+
+## Agregaciones sobre `nested`
+
+	** Las agregaciones requieren entrar en el **contexto nested**.
+	
+		curl -s -X GET "http://localhost:9200/orders/_search" -H "Content-Type: application/json" -d '
+		{
+		  "size": 0,
+		  "aggs": {
+		    "items_ctx": {
+		      "nested": { "path": "items" },
+		      "aggs": {
+		        "by_sku": {
+		          "terms": { "field": "items.sku", "size": 10 }
+		        },
+		        "avg_price": {
+		          "avg": { "field": "items.price" }
+		        }
+		      }
+		    }
+		  }
+		}'
+
+
+	** Agregación con filtro dentro de nested:
+	
+		curl -s -X GET "http://localhost:9200/orders/_search" -H "Content-Type: application/json" -d '
+		{
+		  "size": 0,
+		  "aggs": {
+		    "items_ctx": {
+		      "nested": { "path": "items" },
+		      "aggs": {
+		        "outdoor_items": {
+		          "filter": { "terms": { "items.tags": ["outdoor"] } },
+		          "aggs": {
+		            "avg_price": { "avg": { "field": "items.price" } }
+		          }
+		        }
+		      }
+		    }
+		  }
+		}'
+
+
+## Actualizaciones con `nested`
+## Para actualizar un elemento `nested` específico suele ser más sencillo **reconstruir** el array en el lado cliente y reindexar el documento completo. No obstante, con `script` puedes manipular arrays:
+
+	** Añadir un nuevo item nested
+		curl -s -X POST "http://localhost:9200/orders/_update/1001" -H "Content-Type: application/json" -d '
+		{
+		  "script": {
+		    "source": "ctx._source.items.add(params.item)",
+		    "lang": "painless",
+		    "params": {
+		      "item": {
+		        "sku": "SKU-SOCK-555",
+		        "qty": 3,
+		        "price": 9.99,
+		        "tags": ["running"],
+		        "shipping": [{ "method": "standard", "cost": 2.99 }]
+		      }
+		    }
+		  }
+		}'
+
+
+	** Actualizar una propiedad de un item que cumple condición:
+		curl -s -X POST "http://localhost:9200/orders/_update/1001" -H "Content-Type: application/json" -d '
+		{
+		  "script": {
+		    "source": """
+		      for (int i = 0; i < ctx._source.items.size(); i++) {
+		        if (ctx._source.items[i].sku == params.sku) {
+		          ctx._source.items[i].price = params.newPrice;
+		        }
+		      }
+		    """,
+		    "lang": "painless",
+		    "params": { "sku": "SKU-TRAIL-001", "newPrice": 74.99 }
+		  }
+		}'
+
+
+⚠️ Si necesitas **actualizar por query** (`_update_by_query`) con `nested`, usa una consulta `nested` en el cuerpo `query` y scripts cuidadosos.
+
+## Pitfalls y buenas prácticas
+
+1.  **Cross-object matching**: Si tienes arrays de objetos y no usas `nested`, las consultas `bool` pueden mezclar atributos de distintos objetos del array → resultados incorrectos. Usa `type: nested`.
+2.  **`inner_hits`**: Muy útil para ver qué sub-objetos nested han matcheado, sobre todo en UI y depuración.
+3.  **Performance**: Campos `nested` multiplican documentos internamente (cada objeto será un doc “hijo”). Evita nested profundos salvo que sean necesarios; considera denormalizar si no necesitas consultas conjuntas.
+4.  **Orden de arrays**: Elasticsearch no preserva orden para propósitos de consulta (los arrays no son indexados con orden semántico).
+5.  **Agregaciones**: Siempre entrar al contexto `nested` con la agregación `nested`. Para volver al documento raíz usa `reverse_nested` si necesitas correlacionar.
+6.  **Actualizaciones**: Modificar elementos concretos dentro de un array nested con scripts puede ser costoso y complejo; reindexar el documento completo suele ser más simple y seguro.
+7.  **Mapping immutable**: No puedes cambiar un campo de `object` a `nested` en caliente. Planifica el mapeo desde el inicio.
+
+	** Ejemplo de `reverse_nested`:
+	
+		curl -s -X GET "http://localhost:9200/orders/_search" -H "Content-Type: application/json" -d '
+		{
+		  "size": 0,
+		  "aggs": {
+		    "items_ctx": {
+		      "nested": { "path": "items" },
+		      "aggs": {
+		        "by_sku": {
+		          "terms": { "field": "items.sku", "size": 10 },
+		          "aggs": {
+		            "back_to_root": {
+		              "reverse_nested": {},
+		              "aggs": {
+		                "by_status": { "terms": { "field": "status" } }
+		              }
+		            }
+		          }
+		        }
+		      }
+		    }
+		  }
+		}'
+
+** Comandos útiles de depuración
+
+	# Ver mapping
+		curl -s "http://localhost:9200/orders/_mapping?pretty"
+
+	# Get por ID
+		curl -s "http://localhost:9200/orders/_doc/1001?pretty"
+
+	# Buscar con explicación
+		curl -s -X GET "http://localhost:9200/orders/_search" -H "Content-Type: application/json" -d '
+		{ "explain": true, "query": { "match_all": {} } }'
+
+
+
+✅ Relevancia (relevance) y Scoring
+
+## 1) Índice y documentos de prueba
+
+	** Crear índice simple
+		curl -s -X PUT "http://localhost:9200/articles" -H "Content-Type: application/json" -d '
+		{
+		  "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		  "mappings": {
+			"properties": {
+			  "title":   { "type": "text" },
+			  "content": { "type": "text" },
+			  "tags":    { "type": "keyword" },
+			  "popularity": { "type": "integer" }
+			}
+		  }
+		}'
+
+	** Indexar 3 documentos
+		curl -s -X POST "http://localhost:9200/articles/_doc/1" -H "Content-Type: application/json" -d '
+		{"title":"Guía de running en Madrid","content":"Correr por el Retiro y Casa de Campo","tags":["running","madrid"],"popularity": 50}'
+
+		curl -s -X POST "http://localhost:9200/articles/_doc/2" -H "Content-Type: application/json" -d '
+		{"title":"Mejores zapatillas para trail","content":"Consejos y pruebas en montaña","tags":["trail","zapatillas"],"popularity": 10}'
+
+		curl -s -X POST "http://localhost:9200/articles/_doc/3" -H "Content-Type: application/json" -d '
+		{"title":"Entrenamiento de running avanzado","content":"Series, técnica y planificación","tags":["running"],"popularity": 80}'
+
+	** Forzar refresco
+		curl -s -X POST "http://localhost:9200/articles/_refresh"
+
+
+## 2) `match` vs `term` (análisis vs coincidencia exacta)
+
+	** match (analiza texto, BM25) - busca 'running'
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '
+		{ "query": { "match": { "title": "running" } }, "_source": ["title"], "explain": true }'
+	
+	** term (exacto, no analiza) - útil para keywords
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '
+		{ "query": { "term": { "tags": "running" } }, "_source": ["title","tags"], "explain": true }'
+
+✅✅ Observa los `scores` y en `explain` cómo BM25 pondera frecuencia y rareza del término. ✅✅
+
+
+## 3) `multi_match` + `boost` (ponderar campos)
+
+	** Ponderar el título más que el contenido
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '
+		{
+		  "_source": ["title"],
+		  "query": {
+		    "multi_match": {
+		      "query": "running",
+		      "fields": ["title^2", "content"]   // ^2 = boost al título
+		    }
+		  }
+		}'
+
+
+✅✅ Si “running” aparece en `title`, sube más el score que si solo está en `content`. ✅✅
+
+
+## 4) `bool` con `should` y `minimum_should_match`
+
+	** Varios criterios opcionales, pero exigimos que al menos 1 se cumpla
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '
+		{
+		  "_source": ["title","tags"],
+		  "query": {
+		    "bool": {
+		      "should": [
+		        { "match": { "title": "running" } },
+		        { "term":  { "tags": "trail" } }
+		      ],
+		      "minimum_should_match": 1
+		    }
+		  }
+		}'
+
+✅✅ Documentos que cumplan más `should` tienden a puntuar mejor. ✅✅
+
+
+## 5) `function_score` (combinar texto con popularidad)
+
+	** Sumamos relevancia textual + boost por popularidad (campo numérico)
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '
+		{
+		  "_source": ["title","popularity"],
+		  "query": {
+		    "function_score": {
+		      "query": { "match": { "content": "running" } },
+		      "field_value_factor": {
+		        "field": "popularity",
+		        "factor": 1.0,
+		        "modifier": "sqrt",   // suaviza el impacto
+		        "missing": 0
+		      },
+		      "boost_mode": "sum",     // score_final = score_textual + factor(popularity)
+		      "score_mode": "sum"
+		    }
+		  }
+		}'
+
+✅✅ Útil para re-ranking por métricas de negocio (clics, ventas, likes…). ✅✅
+
+
+## 6) `script_score` (control total del score)
+
+	** Ejemplo simple: priorizar títulos que contengan 'running' y sumar popularidad
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source": ["title","tags","popularity"],
+		  "query": {
+		    "script_score": {
+		      "query": { "match_all": {} },
+		      "script": {
+		        "source": "double bonus = doc[\"tags\"].contains(\"running\") ? 5.0 : 0.0; double pop = doc[\"popularity\"].size() > 0 ? doc[\"popularity\"].value : 0.0; return bonus + Math.sqrt(pop);"
+		      }
+		    }
+		  }
+		}'
+
+✅✅ Con `script_score` puedes implementar tu lógica de negocio en Painless. Úsalo con moderación (impacto en rendimiento). ✅✅
+
+
+
+
+
+📝 Aplicar **boost** en consultas de Elasticsearch.
+⚠️ Recuerda: los boosts influyen en el `_score`. Observa cómo cambia el orden de resultados. ⚠️
+
+
+## 0) Dataset rápido (si no lo tienes cargado)
+
+	** Índice y docs de ejemplo
+		curl -s -X PUT "http://localhost:9200/articles" -H "Content-Type: application/json" -d '{
+		  "settings":{"number_of_shards":1,"number_of_replicas":0},
+		  "mappings":{"properties":{
+		    "title":{"type":"text","fields":{"keyword":{"type":"keyword"}}},
+		    "content":{"type":"text"},
+		    "tags":{"type":"keyword"},
+		    "popularity":{"type":"integer"}
+		  }}
+		}'
+
+curl -s -X POST "http://localhost:9200/articles/_doc/1" -H "Content-Type: application/json" -d '{"title":"Guía de running en Madrid","content":"Correr por el Retiro y Casa de Campo","tags":["running","madrid"],"popularity":50}'
+curl -s -X POST "http://localhost:9200/articles/_doc/2" -H "Content-Type: application/json" -d '{"title":"Mejores zapatillas para trail","content":"Consejos y pruebas en montaña","tags":["trail","zapatillas"],"popularity":10}'
+curl -s -X POST "http://localhost:9200/articles/_doc/3" -H "Content-Type: application/json" -d '{"title":"Entrenamiento de running avanzado","content":"Series, técnica y planificación","tags":["running"],"popularity":80}'
+curl -s -X POST "http://localhost:9200/articles/_refresh"
+
+
+## 1) **Field boost** con `multi_match` (`title^2`)
+
+	** Da más peso al título que al contenido.
+	
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source":["title"],
+		  "query":{
+		    "multi_match":{
+		      "query":"running",
+		      "fields":["title^2","content"]  // ^2 = el título puntúa el doble
+		    }
+		  }
+		}'
+
+
+## 2) **Boost a nivel de query** (`boost`)
+
+	** Sube el peso de una cláusula específica en un `bool`.
+	
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source":["title","tags"],
+		  "query":{
+		    "bool":{
+		      "should":[
+		        { "match": { "title": { "query":"running", "boost": 3.0 } } },
+		        { "term":  { "tags":  { "value":"trail",   "boost": 1.0 } } }
+		      ],
+		      "minimum_should_match":1
+		    }
+		  }
+		}'
+
+
+## 3) **`boosting` query** (promueve positivos y deprime negativos)
+
+	** Promueve documentos que coinciden con `running`, pero **penaliza** si además contienen `trail`.
+	
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source":["title","tags"],
+		  "query":{
+		    "boosting":{
+		      "positive":{ "match":{ "content":"running" } },
+		      "negative":{ "term": { "tags":"trail" } },
+		      "negative_boost": 0.3
+		    }
+		  }
+		}'
+
+
+## 4) **`dis_max`** con boosts y `tie_breaker`
+
+	** Devuelve el mejor score entre varias alternativas, con un pequeño extra por coincidencias múltiples.
+	
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source":["title"],
+		  "query":{
+		    "dis_max":{
+		      "queries":[
+		        { "match":{ "title":   { "query":"running", "boost":2.0 } } },
+		        { "match":{ "content": { "query":"running", "boost":1.0 } } }
+		      ],
+		      "tie_breaker": 0.2
+		    }
+		  }
+		}'
+
+
+## 5) **`function_score`** (texto + factor de negocio)
+
+	** Reordena combinando BM25 con **popularidad** (raíz cuadrada para suavizar).
+
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source":["title","popularity"],
+		  "query":{
+		    "function_score":{
+		      "query":{ "match":{ "content":"running" } },
+		      "field_value_factor":{
+		        "field":"popularity",
+		        "modifier":"sqrt",
+		        "factor":1.0,
+		        "missing":0
+		      },
+		      "boost_mode":"sum",
+		      "score_mode":"sum"
+		    }
+		  }
+		}'
+
+
+## 6) **`script_score`** con bonus por `tags` y boost externo
+
+	** Ejemplo estable (sin HTML ni comillas raras). Además, aplicamos un `boost` global a todo el `script_score`.
+
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source":["title","tags","popularity"],
+		  "query":{
+		    "script_score":{
+		      "query":{ "match_all":{} },
+		      "script":{
+		        "source":"double bonus = doc[\"tags\"].contains(\"running\") ? 5.0 : 0.0; double pop = doc[\"popularity\"].size()>0 ? doc[\"popularity\"].value : 0.0; return bonus + Math.sqrt(pop);"
+		      },
+		      "boost": 1.5
+		    }
+		  }
+		}'
+
+
+## 7) **`constant_score`** con `boost` (útil para filtros)
+
+	** Convierte coincidencias en **score uniforme** y lo controla con `boost`.
+	
+		curl -s -X GET "http://localhost:9200/articles/_search" -H "Content-Type: application/json" -d '{
+		  "_source":["title","tags"],
+		  "query":{
+		    "constant_score":{
+		      "filter":{ "term":{ "tags":"running" } },
+		      "boost": 4.0
+		    }
+		  }
+		}'
+
+
+### Tip rápido
+*   **Field boosts** (`^n`) y **query boosts** (`"boost": n`) son baratos y efectivos.
+*   Para re-ranking avanzado, usa **`function_score`** y deja BM25 como base.
+*   Evita `script_score` en volúmenes grandes si no es necesario (impacto en CPU).
+
+
+
+
+
+
+🏗️ Creación, borrado, apertura/cierre
+
+	** Crear un índice (con settings básicos):
+		curl -s -X PUT 'http://localhost:9200/demo-index' -H 'Content-Type: application/json' -d '{
+		  "settings": {
+		    "numberofshards": 1,
+		    "numberofreplicas": 1
+		  }
+		}'
+
+		curl -s -X POST "http://localhost:9200/products/_doc/1" -H "Content-Type: application/json" -d '
+		{
+		  "name": "Zapatillas Trail",
+		  "tags": ["deporte", "outdoor", "rebajas"],
+		  "prices": [89.99, 79.99],
+		  "colors": ["azul", "negro"],
+		  "created_at": "2025-12-01T10:00:00Z"
+		}'
+		
+		curl -s -X POST "http://localhost:9200/products/_doc/2" -H "Content-Type: application/json" -d '
+		{
+		  "name": "Camiseta Técnica",
+		  "tags": ["deporte", "running"],
+		  "prices": [29.99],
+		  "colors": ["blanco"],
+		  "created_at": "2025-12-02T09:30:00Z"
+		}'
+
+
+	** Borrar un índice (⚠️ irreversible):
+		curl -s -X DELETE 'http://localhost:9200/demo-index'
+	
+	
+	** Cerrar / abrir (libera recursos sin borrar datos):
+		curl -s -X POST 'http://localhost:9200/demo-index/close'
+		curl -s -X POST 'http://localhost:9200/demo-index/open'
+
+
+
+🧱 Mappings (esquema) y settings
+
+	** Ver mapping:
+		curl -s 'http://localhost:9200/logstash-ha-2025.12.10/_mapping?pretty'
+	
+	** Actualizar mapping (añadir campo con tipo):
+		curl -s -X PUT 'http://localhost:9200/demo-index/mapping' -H 'Content-Type: application/json' -d '{
+		  "properties": {
+		    "loglevel": { "type": "keyword" },
+		    "message":   { "type": "text" }
+		  }
+		}'
+		
+	** Ver settings:
+		curl -s 'http://localhost:9200/demo-index/_settings?pretty'
+	
+	** Cambiar número de réplicas (online):
+		curl -s -X PUT 'http://localhost:9200/demo-index/settings' -H 'Content-Type: application/json' -d '{
+		  "index": { "numberof_replicas": 1 }
+		}'
+
+
+
+🪪 Aliases y reindex
+
+	** Crear alias:
+		curl -s -X POST 'http://localhost:9200/_aliases' -H 'Content-Type: application/json' -d '{
+		  "actions": [
+		    { "add": { "index": "logstash-ha-2025.12.10", "alias": "logs-ha" } }
+		  ]
+		}'
+		
+	** Ver aliases:
+		Reindex (copiar datos de A → B, opcionalmente con transformaciones):
+		curl -s -X POST 'http://localhost:9200/_reindex' -H 'Content-Type: application/json' -d '{
+		  "source": { "index": "logstash-ha-2025.12.10" },
+		  "dest":   { "index": "logs-archived" }
+		}'
+	
+	** Reindex con filtro (solo log_level: ERROR):
+		curl -s -X POST 'http://localhost:9200/reindex' -H 'Content-Type: application/json' -d '{
+		  "source": {
+		    "index": "logstash-ha-2025.12.10",
+		    "query": { "term": { "loglevel.keyword": "ERROR" } }
+		  },
+		  "dest": { "index": "logs-errors" }
+		}'
+
+
+
+🔄 Rollover e ILM (gestión de vida del índice)
+	
+	** Definir alias + índice inicial para rollover:
+		curl -s -X PUT 'http://localhost:9200/logs-write' -H 'Content-Type: application/json' -d '{
+		  "aliases": { "logs-alias": { "iswriteindex": true } }
+		}'
+	
+	** Rollover por tamaño o número de docs:
+		curl -s -X POST 'http://localhost:9200/logs-alias/rollover' -H 'Content-Type: application/json' -d '{
+		  "conditions": {
+		    "maxsize": "1gb",
+		    "max_docs": 1000000
+		  }
+		}'
+	
+	** Adjuntar política ILM a un índice (ejemplo):
+		curl -s -X PUT 'http://localhost:9200/ilm/policy/logs-policy' -H 'Content-Type: application/json' -d '{
+		  "policy": {
+		    "phases": {
+		      "hot":   { "actions": { "rollover": { "maxsize": "1gb", "maxage": "7d" } } },
+		      "delete":{ "minage": "30d", "actions": { "delete": {} } }
+		    }
+		  }
+		}'
+	
+		curl -s -X PUT 'http://localhost:9200/logstash-ha-2025.12.10/settings' -H 'Content-Type: application/json' -d '{
+		  "index": {
+		    "lifecycle": {
+		      "name": "logs-policy",
+		      "rolloveralias": "logs-alias"
+		    }
+		  }
+		}'
+
+
+
+🧰 Mantenimiento (forcemerge, shrink, split)
+	
+	** Force merge (reduce segmentos; útil después de cargas masivas):
+		curl -s -X POST 'http://localhost:9200/logstash-ha-2025.12.10/forcemerge?maxnum_segments=1'
+	
+	
+	⚠️ Ejecutar con precaución; puede consumir IO y CPU.
+	
+	** Shrink (reducir shards; requiere índice cerrado y bloqueado):
+		
+		# preparar
+		curl -s -X PUT 'http://localhost:9200/demo-index/settings' -H 'Content-Type: application/json' -d '{"index.blocks.write": true}'
+		curl -s -X POST 'http://localhost:9200/demo-index/close'
+		
+		# shrink a 1 shard
+		curl -s -X POST 'http://localhost:9200/demo-index/shrink/demo-index-shrinked' -H 'Content-Type: application/json' -d '{"settings": {"index.numberofshards": 1 }}'
+		
+		# reabrir y limpiar bloqueos
+		curl -s -X POST 'http://localhost:9200/demo-index-shrinked/open'
+		curl -s -X PUT 'http://localhost:9200/demo-index-shrinked/_settings' -H 'Content-Type: application/json' -d '{"index.blocks.write": false}'
+	
+	
+	** Split (aumentar shards; requiere preparación):
+		
+		# preparar: establecer número de réplicas = 1, definir routing
+		curl -s -X PUT 'http://localhost:9200/demo-index/settings' -H 'Content-Type: application/json' -d '{
+		  "index": {
+		    "numberofreplicas": 1,
+		    "routing": { "allocation": { "include": { "name": "es-node-1" } } }
+		  }
+		}'
+		curl -s -X POST 'http://localhost:9200/demo-index/close'
+		curl -s -X POST 'http://localhost:9200/demo-index/split/demo-index-split' -H 'Content-Type: application/json' -d '{
+		  "settings": { "index.numberofshards": 4 }
+		}'
+		curl -s -X POST 'http://localhost:9200/demo-index-split/_open'
+	
+
+
+🗄️ Snapshots (backup/restore)
+	
+	** Listar repositorios de snapshot:
+		curl -s 'http://localhost:9200/_snapshot?pretty'
+	
+	** Crear repositorio (filesystem):
+		curl -s -X PUT 'http://localhost:9200/_snapshot/fs-repo' -H 'Content-Type: application/json' -d '{
+		  "type": "fs",
+		  "settings": { "location": "/mnt/es-backups", "compress": true }
+		}'
+	
+	** Tomar snapshot de un índice:
+		curl -s -X PUT 'http://localhost:9200/snapshot/fs-repo/snap-2025-12-10' -H 'Content-Type: application/json' -d '{
+		  "indices": "logstash-ha-2025.12.10",
+		  "ignoreunavailable": true,
+		  "includeglobalstate": false
+		}'
+	
+	** Restaurar snapshot:
+		curl -s -X POST 'http://localhost:9200/snapshot/fs-repo/snap-2025-12-10/restore' -H 'Content-Type: application/json' -d '{
+		  "indices": "logstash-ha-2025.12.10",
+		  "renamepattern": "logstash-ha-(.*)",
+		  "renamereplacement": "logstash-ha-restore-$1"
+		}'
+	
+
+
+🧾 Bonus: usar Kibana Dev Tools (si tienes Kibana)
+
+	En Kibana → Dev Tools → Console, puedes ejecutar los mismos comandos sin curl. Por ejemplo:
+	
+		GET cat/indices?v&s=store.size:desc
+		GET logstash-ha-2025.12.10/search?q=ERROR&size=10
+		POST _reindex
+		{
+		  "source": { "index": "logstash-ha-2025.12.10" },
+		  "dest":   { "index": "logs-archived" }
+		}
