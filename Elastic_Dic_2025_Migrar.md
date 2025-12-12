@@ -948,7 +948,7 @@ Esperado:
 
 ```bash
 Password for the [elastic] user successfully reset.
-New value: kFpvEyXiMK=hHA+IMaVN
+New value: xxxPASSWORDxxx
 ```
 
 También puedes hacerlo para:
