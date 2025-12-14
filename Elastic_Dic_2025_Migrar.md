@@ -996,6 +996,188 @@ sudo systemctl restart kibana
 
 Ahora kibana es capaz de comunicar con elastic después de haber habilitado la autenticación básica, y adicionalmente nos solicitará credenciales para poder acceder. En este momento para acceder a kibana podemos usar el usuario `elastic` al que le hemos establecido la contraseña previamente.
 
+
+
+## 8.7. Configurar tráfico seguro HTTPS en Elastic y Kibana
+
+Hasta ahora hemos habilitado la comunicación segura entre nodos de elastic y configurado la autenticación de usuarios, pero el acceso tanto a elastic como kibana se siguen realizando mediante HTTP sin seguridad. A continuación habilitamos TLS en estos accesos.
+
+Detener tanto kibana como elastic en todos los nodos.
+
+```bash
+sudo systemctl stop kibana
+sudo systemctl stop elasticsearch
+```
+
+Desde uno cualquiera de los nodos generamos los certificados para cada uno de los nodos
+
+```bash
+sudo /usr/share/elasticsearch/bin/elasticsearch-certutil http
+```
+Respondemos de la siguiente forma en las distintas preguntas que nos realiza el asistente:
+```
+- Generate a CSR? [y/N] N
+- Use an existing CA? [y/N]y
+- CA Path: /usr/share/elasticsearch/elastic-stack-ca.p12
+- Password for elastic-stack-ca.p12:
+- For how long should your certificate be valid? [5y] 90D
+- Generate a certificate per node? [y/N]y
+- node #1 name: es-node-1
+- Enter all the hostnames that you need, one per line.
+es-node-1
+- Enter all the IP addresses that you need, one per line.
+10.10.1.4
+172.x.x.x     # Aqui la ip pública de tu nodo 1
+- Do you wish to change any of these options? [y/N]N
+- Generate additional certificates? [Y/n]Y
+- node #2 name: es-node-2
+- Enter all the hostnames that you need, one per line.
+es-node-2
+- Enter all the IP addresses that you need, one per line.
+10.10.1.5
+52.x.x.x     # Aqui la ip pública de tu nodo 2
+- Do you wish to change any of these options? [y/N]N
+- Generate additional certificates? [Y/n]Y
+- node #3 name: es-node-3
+- Enter all the hostnames that you need, one per line.
+es-node-3
+- Enter all the IP addresses that you need, one per line.
+10.10.1.6
+20.x.x.x     # Aqui la ip pública de tu nodo 3
+- Do you wish to change any of these options? [y/N]N
+- Generate additional certificates? [Y/n]n
+- Provide a password for the "http.p12" file:  [<ENTER> for none]
+- What filename should be used for the output zip file? [/usr/share/elasticsearch/elasticsearch-ssl-http.zip]
+```
+
+Después de este proceso se generará el fichero `/usr/share/elasticsearch/elasticsearch-ssl-http.zip` que contiene los certificados y llaves privadas para cada nodo. Dentro se genera un directorio elasticsearch y otro kibana con lo necesario para cada producto.
+
+Descomprimimos el fichero generado
+
+```bash
+sudo apt install unzip
+unzip /usr/share/elasticsearch/elasticsearch-ssl-http.zip
+```
+
+En cada nodo del cluster repite los siguientes pasos:
+
+* Copia el archivo `http.p12` correspondiente de cada nodo dentro de `/etc/elasticsearch/`
+
+```bash
+sudo cp elasticsearch/es-node-x/http.p12 /etc/elasticsearch/http.p12
+sudo chmod 640 /etc/elasticsearch/http.p12
+```
+
+* Edita `elasticsearch.yml` para habilitar la seguridad HTTPS
+
+```bash
+sudo nano /etc/elasticsearch/elasticsearch.yml
+```
+
+```yaml
+# This turns on SSL for the HTTP (Rest) interface
+xpack.security.http.ssl.enabled: true
+
+# This configures the keystore to use for SSL on HTTP
+xpack.security.http.ssl.keystore.path: "http.p12"
+```
+
+**(Opcional)** En el caso de que al generar los certificados hayas configurado una contraseña (conveniente para producción), ejecuta lo siguiente para añadir la contraseña a la configuración segura de elastic `elasticsearch.keystore`
+
+```bash
+sudo /usr/share/elasticsearch/bin/elasticsearch-keystore add xpack.security.http.ssl.keystore.secure_password
+```
+
+Inicia elastic
+
+```bash
+sudo systemctl start elasticsearch
+sudo systemctl status elasticsearch
+```
+
+Verifica la salud del cluster, esta vez por https
+
+```bash
+curl -s -k https://elastic:PASSWORD@localhost:9200/
+curl -s -k https://elastic:PASSWORD@localhost:9200/_cluster/health?pretty
+curl -s -k https://elastic:PASSWORD@localhost:9200/_cat/nodes?v
+```
+
+Una vez que Elastic está funcionando con https hay que realizar dos pasos adicionales:
+
+* permitir la comunicación segura entre kibana y elastic
+* permitir la comunicación segura entre el navegador y kibana
+
+Para el primer punto usaremos el fichero `elasticsearch-ca.pem` que se generó dentro de `elasticsearch-ssl-http.zip` para que kibana confie en el certificado de cada nodo
+
+```bash
+sudo cp kibana/elasticsearch-ca.pem /etc/kibana/elasticsearch-ca.pem
+sudo nano /etc/kibana/kibana.yml
+```
+
+```yaml
+elasticsearch.hosts: ["https://10.10.1.4:9200","https://10.10.1.5:9200","https://10.10.1.6:9200"]
+# This configures Kibana to trust a specific Certificate Authority for connections to Elasticsearch
+elasticsearch.ssl.certificateAuthorities: [ "/etc/kibana/elasticsearch-ca.pem" ]
+```
+
+Iniciamos kibana y verificamos que sigue funcionando correctamente, realizando alguna búsqueda o consultando el dashboard que generamos anteriomente.
+
+```bash
+sudo systemctl start kibana
+```
+
+Una vez verificado, detenemos de nuevo kibana para realizar el último paso de configuración, habilitar el acceso a kibana por https.
+
+```bash
+sudo systemctl stop kibana
+```
+
+Para el laboratorio, aprovecharemos para kibana los mismos certificados que ya tenemos configurados en elastic (en producción generaríamos unos nuevos, incluso uno también para el balanceador, firmados por una CA reconocida). Extraemos en formato PEM el certificado y la llave privada de `http.p12` ya que kibana necesita las dos partes por separado.
+
+```bash
+sudo openssl pkcs12 -in /etc/elasticsearch/http.p12 -out /etc/kibana/kibana-server.key -nodes -nocerts
+
+sudo openssl pkcs12 -in /etc/elasticsearch/http.p12 -out /etc/kibana/kibana-server.crt -nokeys
+
+sudo chmod 640 /etc/kibana/kibana-server.key
+sudo chmod 640 /etc/kibana/kibana-server.crt
+```
+
+Configuramos kibana para que use esos ficheros
+
+```bash
+sudo nano /etc/kibana/kibana.yml
+```
+
+```yaml
+server.ssl.enabled: true
+server.ssl.certificate: /etc/kibana/kibana-server.crt
+server.ssl.key: /etc/kibana/kibana-server.key
+```
+
+Iniciamos de nuevo kibana
+
+```bash
+sudo systemctl start kibana
+sudo systemctl status kibana
+```
+
+Verificamos que podemos acceder mediante https
+
+```bash
+curl -k -I https://localhost:5601
+
+HTTP/1.1 302 Found
+```
+
+Para finalizar nos tomamos una cerveza bien fria, para celebrar que hemos actualizado la versión de elastic y kibana, y configurado la seguridad :-)
+
+> **Nota:** Debemos tener en cuenta que al haber habilitado el acceso https a Elastic, si necesitamos resetear de nuevo la password de un usuario con `elasticsearch-reset-password` esta vez la comunicación de esta herramienta con elastic también se realizará mediante https después de haber configurado `xpack.security.http.ssl.enabled: true` en `elasticsearch.yml`
+
+![Acceso a kibana por https](Elastic_Dic_2025_Migrar_https_certificado.jpg)
+![Acceso a kibana por https](Elastic_Dic_2025_Migrar_https_dashboard.jpg)
+
 ---
 
 # 🟩 **9. Crear usuarios y roles personalizados**
